@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Калькулятор нагрузки и бюджета</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+    .container { max-width: 950px; }
+    label { display: block; margin-top: 15px; }
+    input, select { padding: 8px; margin-left: 10px; }
+    button { margin-top: 20px; padding: 10px 20px; font-size: 16px; }
+    .result { margin-top: 30px; padding: 20px; background: #f9f9f9; border-radius: 8px; }
+    h3 { margin-top: 30px; color: #333; }
+    .approach { margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+    .warning { color: #d32f2f; font-weight: bold; }
+    .success { color: #2e7d32; font-weight: bold; }
+    .budget { background: #e8f5e9; border-left: 5px solid #4caf50; padding: 15px; margin-top: 20px; }
+    .budget.warning { background: #ffebee; border-left-color: #f44336; }
+    table { margin-top: 10px; border-collapse: collapse; }
+    th, td { padding: 8px; text-align: left; border: 1px solid #ccc; }
+    .highlight { font-weight: bold; color: #1565c0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Калькулятор нагрузки и бюджета GigaChat</h1>
+    <b>Подход 1</b> (по классике) - пиковая нагрузка умножить среднее время выполнение запроса
+    <br>
+    <b>Подход 2</b> (компромис между количеством потоков, бюджета и максимально допустимым временем ожидания в очереди)
+
+    <label>Стоимость одного потока в год (₽): <input type="number" id="costPerThread" value="10000" min="0"></label>
+    <label>Пиковая нагрузка (запросов в секунду): <input type="number" id="tps" value="50" min="1"></label>
+    <label>Среднее время выполнения (сек): <input type="number" id="time" value="5" min="0.1" step="0.1"></label>
+    <label>Желаемое число одновременных потоков (N) для подхода 2: <input type="number" id="concurrent" value="50" min="1"></label>
+
+
+    <h3>🎯 Ограничения для подхода 2 (чтобы он имел смысл):</h3>
+    <label>
+      Рассчитывать по:
+      <select id="limitType">
+        <option value="queue">Макс. длина очереди</option>
+        <option value="wait">Макс. время ожидания в очереди (сек)</option>
+      </select>
+    </label>
+    <label>Значение: <input type="number" id="limitValue" value="60" min="1"></label>
+
+    <button onclick="calculate()">Рассчитать</button>
+
+    <div class="result" id="result"></div>
+  </div>
+
+  <script>
+    function calculate() {
+      const tps = parseFloat(document.getElementById('tps').value);
+      const time = parseFloat(document.getElementById('time').value);
+      const concurrent = parseInt(document.getElementById('concurrent').value);
+      const costPerThread = parseFloat(document.getElementById('costPerThread').value);
+      const limitType = document.getElementById('limitType').value;
+      const limitValue = parseFloat(document.getElementById('limitValue').value);
+
+      // Подход 1: Сколько нужно потоков для обработки без очереди
+      const requiredThreads = tps * time;
+
+      // Подход 2: Ограниченный параллелизм
+      const actualThroughput = concurrent / time;
+      const delta = tps - actualThroughput;
+
+      // Расчёт бюджетов
+      const costApproach1 = requiredThreads * costPerThread;
+      const costApproach2 = concurrent * costPerThread;
+      const budgetDiff = costApproach1 - costApproach2;
+      const budgetDiffPercent = ((costApproach1 / costApproach2) - 1) * 100;
+
+      // Расчёт максимальной длительности пика
+      let maxDuration = 0;
+      let limitDescription = "";
+
+      if (delta <= 0) {
+        maxDuration = Infinity;
+        limitDescription = "✅ Система устойчива — очередь не растёт, ограничения не нарушены.";
+      } else {
+        if (limitType === "queue") {
+          maxDuration = limitValue / delta;
+          limitDescription = `⏱️ Пик может длиться до <strong>${maxDuration.toFixed(1)} сек</strong>, пока очередь не превысит ${limitValue} запросов.`;
+        } else { // wait
+          maxDuration = (limitValue * actualThroughput) / delta;
+          limitDescription = `⏱️ Пик может длиться до <strong>${maxDuration.toFixed(1)} сек</strong>, пока время ожидания не превысит ${limitValue} сек.`;
+        }
+      }
+
+      // Таблица роста очереди
+      const timePoints = [1, 5, 10, 30, 60];
+      let queueTable = "<table><tr><th>Время пика</th><th>Длина очереди</th><th>Макс. время ожидания в очереди</th></tr>";
+      if (delta <= 0) {
+        queueTable += `<tr><td colspan="3">✅ Очередь не растёт</td></tr>`;
+      } else {
+        for (const t of timePoints) {
+          const queueLength = delta * t;
+          const maxWaitTime = queueLength / actualThroughput;
+          queueTable += `<tr><td>${t} сек</td><td>${queueLength.toFixed(1)}</td><td>${maxWaitTime.toFixed(1)} сек</td></tr>`;
+        }
+      }
+      queueTable += "</table>";
+
+      // Рекомендация по длительности пика
+      let durationRecommendation = "";
+      if (maxDuration >= 60) {
+        durationRecommendation = "✅ Подход 2 приемлем — даже минутный пик не нарушит ваши ограничения.";
+      } else if (maxDuration >= 10) {
+        durationRecommendation = "🔶 Подход 2 возможен, если пики кратковременные (менее минуты). Для долгих пиков — выбирайте подход 1.";
+      } else if (maxDuration > 0) {
+        durationRecommendation = "❌ Подход 2 рискован — даже короткий пик нарушит ваши ограничения. Рекомендуем подход 1 или увеличение N.";
+      } else {
+        durationRecommendation = "✅ Подход 2 полностью справляется с нагрузкой — можно даже уменьшить N для экономии.";
+      }
+
+      // Форматирование денег
+      const formatMoney = (num) => new Intl.NumberFormat('ru-RU').format(Math.round(num));
+
+      // Вывод результатов
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = `
+        <h3>📊 Подход 1: Масштабирование под пик (без очереди)</h3>
+        <div class="approach">
+          Чтобы обрабатывать <strong>${tps} запросов/сек</strong> без бесконечного роста очереди, нужно:
+          <br><strong>${requiredThreads.toFixed(1)} одновременных потоков</strong>.
+          <br>💰 <span class="highlight">Годовая стоимость: ${formatMoney(costApproach1)} ₽</span>
+        </div>
+
+        <h3>⚖️ Подход 2: Ограниченный параллелизм (N = ${concurrent})</h3>
+        <div class="approach">
+          При ${concurrent} потоках и времени ${time} сек — реальный throughput:
+          <br><strong>${actualThroughput.toFixed(2)} запросов/сек</strong>.
+          <br>💰 <span class="highlight">Годовая стоимость: ${formatMoney(costApproach2)} ₽</span>
+          <br><br>
+          Избыток запросов в секунду: <strong>${delta > 0 ? delta.toFixed(2) : '0 (система справляется)'}</strong>
+          ${delta > 0 ? '<div class="warning">⚠️ Очередь растёт — пользователи будут ждать!</div>' : '<div class="success">✅ Система устойчива</div>'}
+          ${queueTable}
+        </div>
+
+        <h3>⏱️ Автоматический расчёт: "Сколько может длиться пик, чтобы подход 2 имел смысл?"</h3>
+        <div class="approach">
+          ${limitDescription}
+          <br><br>
+          <strong>Рекомендация:</strong> ${durationRecommendation}
+        </div>
+
+        <h3>💼 Сравнение бюджетов</h3>
+        <div class="budget ${budgetDiff > 0 ? '' : 'warning'}">
+          <strong>Подход 1 (масштаб):</strong> ${formatMoney(costApproach1)} ₽/год<br>
+          <strong>Подход 2 (ограниченный):</strong> ${formatMoney(costApproach2)} ₽/год<br>
+          <strong>Разница:</strong> ${formatMoney(budgetDiff)} ₽/год (${budgetDiff > 0 ? `экономия ${budgetDiffPercent.toFixed(1)}%` : "дороже"})<br><br>
+
+          💡 <strong>Бизнес-вывод:</strong>
+          ${budgetDiff > 0 ?
+            `Подход 2 экономит <strong>${formatMoney(budgetDiff)} ₽ в год</strong>. Это оправдано, если пики кратковременные и пользователи готовы ждать.` :
+            `Подход 2 дороже — такого быть не должно. Проверьте входные данные.`}
+        </div>
+
+      `;
+    }
+
+    // Запустить расчёт при загрузке
+    window.onload = calculate;
+  </script>
+</body>
+</html>
